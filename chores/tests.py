@@ -1,4 +1,5 @@
 import datetime
+import io
 from unittest import mock
 
 from django.contrib import admin
@@ -1166,3 +1167,109 @@ class SeedDataCommandTests(TestCase):
             Chore.objects.filter(title="Empty Kitchen Trash").count(), 1
         )
         self.assertIn(Roommate.objects.count(), (3, 4))
+
+
+class EdgeCaseQATests(TestCase):
+    def seed(self):
+        call_command("seed_data", stdout=io.StringIO())
+
+    def current_week_start(self):
+        today = timezone.localdate()
+        return today - datetime.timedelta(days=today.weekday())
+
+    def test_point_tie_during_generation_is_broken_by_primary_key(self):
+        self.seed()
+        Roommate.objects.update(total_points=0)
+        heaviest = (
+            Chore.objects.filter(is_active=True)
+            .order_by("-weight", "id")
+            .first()
+        )
+        first_roommate = Roommate.objects.order_by("pk").first()
+
+        generate_weekly_assignments(self.current_week_start())
+
+        assignment = ChoreAssignment.objects.get(chore=heaviest)
+        self.assertEqual(assignment.assigned_to_id, first_roommate.pk)
+
+    def test_point_tie_through_generate_cycle_is_deterministic(self):
+        self.seed()
+        Roommate.objects.update(total_points=0)
+        heaviest = (
+            Chore.objects.filter(is_active=True)
+            .order_by("-weight", "id")
+            .first()
+        )
+        first_roommate = Roommate.objects.order_by("pk").first()
+
+        self.client.get("/generate-cycle/")
+
+        assignment = ChoreAssignment.objects.get(chore=heaviest)
+        self.assertEqual(assignment.assigned_to_id, first_roommate.pk)
+
+    def test_completing_an_already_penalized_chore_is_refused(self):
+        self.seed()
+        roommate = Roommate.objects.create(name="Frankie", total_points=5)
+        chore = Chore.objects.create(title="Scrub Oven", weight=3)
+        assignment = ChoreAssignment.objects.create(
+            chore=chore,
+            assigned_to=roommate,
+            due_date=timezone.localdate() - datetime.timedelta(days=2),
+            status=ChoreAssignment.PENALIZED,
+        )
+
+        result = complete_assignment(assignment)
+
+        assignment.refresh_from_db()
+        roommate.refresh_from_db()
+        self.assertFalse(result)
+        self.assertEqual(assignment.status, ChoreAssignment.PENALIZED)
+        self.assertIsNone(assignment.completed_at)
+        self.assertEqual(roommate.total_points, 5)
+
+    def test_penalized_chore_endpoint_does_not_complete_or_credit(self):
+        self.seed()
+        roommate = Roommate.objects.create(name="Frankie", total_points=5)
+        chore = Chore.objects.create(title="Scrub Oven", weight=3)
+        assignment = ChoreAssignment.objects.create(
+            chore=chore,
+            assigned_to=roommate,
+            due_date=timezone.localdate() - datetime.timedelta(days=2),
+            status=ChoreAssignment.PENALIZED,
+        )
+
+        response = self.client.post(f"/assignments/{assignment.pk}/complete/")
+
+        assignment.refresh_from_db()
+        roommate.refresh_from_db()
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(assignment.status, ChoreAssignment.PENALIZED)
+        self.assertEqual(roommate.total_points, 5)
+
+    def test_penalty_scan_penalizes_an_overdue_seeded_chore(self):
+        self.seed()
+        roommate = Roommate.objects.create(name="Frankie", total_points=10)
+        chore = Chore.objects.create(title="Scrub Oven", weight=3)
+        assignment = ChoreAssignment.objects.create(
+            chore=chore,
+            assigned_to=roommate,
+            due_date=timezone.localdate() - datetime.timedelta(days=1),
+            status=ChoreAssignment.PENDING,
+        )
+
+        call_command("run_penalty_check", stdout=io.StringIO())
+
+        assignment.refresh_from_db()
+        roommate.refresh_from_db()
+        self.assertEqual(assignment.status, ChoreAssignment.PENALIZED)
+        self.assertEqual(roommate.total_points, 7)
+
+    def test_duplicate_generation_attempts_create_no_duplicates(self):
+        self.seed()
+
+        self.client.get("/generate-cycle/")
+        count_after_first = ChoreAssignment.objects.count()
+        self.client.get("/generate-cycle/")
+
+        self.assertGreater(count_after_first, 0)
+        self.assertEqual(ChoreAssignment.objects.count(), count_after_first)
