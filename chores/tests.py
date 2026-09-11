@@ -1097,3 +1097,72 @@ class GenerateCycleEndpointTests(TestCase):
         response = self.client.get("/")
 
         self.assertContains(response, 'href="/generate-cycle/"')
+
+
+class SeedDataCommandTests(TestCase):
+    def test_command_is_discoverable(self):
+        from django.core.management import get_commands
+
+        self.assertEqual(get_commands().get("seed_data"), "chores")
+
+    def test_fresh_run_creates_three_or_four_roommates(self):
+        call_command("seed_data")
+
+        self.assertIn(Roommate.objects.count(), (3, 4))
+        for roommate in Roommate.objects.all():
+            self.assertTrue(roommate.name)
+
+    def test_fresh_run_creates_chores_with_varied_weights_and_days(self):
+        call_command("seed_data")
+
+        chores = Chore.objects.all()
+        self.assertGreaterEqual(chores.count(), 3)
+        weights = set(chores.values_list("weight", flat=True))
+        days = set(chores.values_list("recurrence_day", flat=True))
+        self.assertTrue(weights.issubset({1, 2, 3, 4}))
+        self.assertEqual(weights, {1, 2, 3, 4})
+        self.assertGreater(len(days), 1)
+
+    def test_every_seeded_chore_is_active_and_has_a_title(self):
+        call_command("seed_data")
+
+        for chore in Chore.objects.all():
+            with self.subTest(title=chore.title):
+                self.assertTrue(chore.is_active)
+                self.assertTrue(chore.title)
+
+    def test_running_twice_produces_no_duplicates(self):
+        call_command("seed_data")
+        roommate_count = Roommate.objects.count()
+        chore_count = Chore.objects.count()
+
+        call_command("seed_data")
+
+        self.assertEqual(Roommate.objects.count(), roommate_count)
+        self.assertEqual(Chore.objects.count(), chore_count)
+
+    def test_creates_no_assignments(self):
+        call_command("seed_data")
+
+        self.assertEqual(ChoreAssignment.objects.count(), 0)
+
+    def test_prints_a_summary(self):
+        import io
+
+        output = io.StringIO()
+
+        call_command("seed_data", stdout=output)
+
+        self.assertIn("Seed complete", output.getvalue())
+
+    def test_partial_data_does_not_duplicate(self):
+        Roommate.objects.create(name="Alex")
+        Chore.objects.create(title="Empty Kitchen Trash", weight=1)
+
+        call_command("seed_data")
+
+        self.assertEqual(Roommate.objects.filter(name="Alex").count(), 1)
+        self.assertEqual(
+            Chore.objects.filter(title="Empty Kitchen Trash").count(), 1
+        )
+        self.assertIn(Roommate.objects.count(), (3, 4))
