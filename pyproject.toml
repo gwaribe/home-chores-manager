@@ -1,0 +1,14 @@
+[project]
+name = "home-chores-manager"
+version = "0.1.0"
+description = "A lightweight, full-stack Django web app that automates fair chore distribution for shared households."
+authors = [
+    { name = "Granton", email = "waribekihiko651@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "django>=5.2,<5.3",
+]
+
+[tool.uv]
+package = false

@@ -1,0 +1,25 @@
+{
+  "name": "Home-Chores-Container",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12",
+  "features": {
+    "ghcr.io/devcontainers-extra/features/uv:1": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  "forwardPorts": [8000],
+  "portsAttributes": {
+    "8000": {
+      "label": "Django Application",
+      "onAutoForward": "openBrowser"
+    }
+  },
+  "postCreateCommand": "uv sync",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "RooVeterinaryInc.roo-cline",
+        "ms-python.python",
+        "batisteo.vscode-django"
+      ]
+    }
+  }
+}
