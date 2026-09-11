@@ -1,5 +1,7 @@
 import datetime
 
+from django.contrib import admin
+from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.test import TestCase
@@ -306,4 +308,110 @@ class ChoreAssignmentModelTests(TestCase):
 
         self.assertEqual(
             ChoreAssignment.objects.filter(status="PENDING").count(), 2
+        )
+
+
+class AdminRegistrationTests(TestCase):
+    def setUp(self):
+        self.admin_user = User.objects.create_superuser(
+            username="admin", email="admin@example.com", password="password"
+        )
+        self.client.force_login(self.admin_user)
+
+    def test_admin_index_lists_all_three_models(self):
+        response = self.client.get("/admin/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Roommates")
+        self.assertContains(response, "Chores")
+        self.assertContains(response, "Chore assignments")
+
+    def test_roommate_admin_list_display(self):
+        model_admin = admin.site._registry[Roommate]
+
+        self.assertEqual(
+            list(model_admin.list_display), ["name", "total_points"]
+        )
+
+    def test_chore_admin_list_display(self):
+        model_admin = admin.site._registry[Chore]
+
+        self.assertEqual(
+            list(model_admin.list_display),
+            ["title", "weight", "recurrence_day", "is_active"],
+        )
+
+    def test_chore_assignment_admin_list_display(self):
+        model_admin = admin.site._registry[ChoreAssignment]
+
+        self.assertEqual(
+            list(model_admin.list_display),
+            ["chore", "assigned_to", "due_date", "status"],
+        )
+
+    def test_changelist_pages_return_200(self):
+        urls = [
+            "/admin/chores/roommate/",
+            "/admin/chores/chore/",
+            "/admin/chores/choreassignment/",
+        ]
+
+        for url in urls:
+            with self.subTest(url=url):
+                self.assertEqual(self.client.get(url).status_code, 200)
+
+    def test_add_pages_return_200(self):
+        urls = [
+            "/admin/chores/roommate/add/",
+            "/admin/chores/chore/add/",
+            "/admin/chores/choreassignment/add/",
+        ]
+
+        for url in urls:
+            with self.subTest(url=url):
+                self.assertEqual(self.client.get(url).status_code, 200)
+
+    def test_post_creates_roommate(self):
+        response = self.client.post(
+            "/admin/chores/roommate/add/",
+            {"name": "Alex", "total_points": "0"},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(Roommate.objects.filter(name="Alex").exists())
+
+    def test_post_creates_chore(self):
+        response = self.client.post(
+            "/admin/chores/chore/add/",
+            {
+                "title": "Trash",
+                "description": "",
+                "weight": "1",
+                "recurrence_day": "0",
+                "is_active": "on",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(Chore.objects.filter(title="Trash").exists())
+
+    def test_post_creates_chore_assignment(self):
+        roommate = Roommate.objects.create(name="Alex")
+        chore = Chore.objects.create(title="Trash")
+
+        response = self.client.post(
+            "/admin/chores/choreassignment/add/",
+            {
+                "chore": chore.pk,
+                "assigned_to": roommate.pk,
+                "due_date": "2026-09-14",
+                "status": "PENDING",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(
+            ChoreAssignment.objects.filter(
+                chore=chore, assigned_to=roommate
+            ).exists()
         )
