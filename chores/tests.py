@@ -101,6 +101,15 @@ class ChoreModelTests(TestCase):
         self.assertEqual(chore.weight, 1)
         self.assertTrue(chore.is_active)
 
+    def test_create_with_only_a_title_uses_field_defaults(self):
+        chore = Chore.objects.create(title="Trash")
+
+        chore.refresh_from_db()
+        self.assertEqual(chore.description, "")
+        self.assertEqual(chore.weight, 1)
+        self.assertEqual(chore.recurrence_day, 0)
+        self.assertTrue(chore.is_active)
+
     def test_recurrence_day_accepts_all_days_of_week(self):
         for day, expected_name in Chore.DAYS_OF_WEEK:
             with self.subTest(day=expected_name):

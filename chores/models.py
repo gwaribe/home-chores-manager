@@ -24,7 +24,7 @@ class Chore(models.Model):
     title = models.CharField(max_length=100)
     description = models.TextField(blank=True)
     weight = models.PositiveIntegerField(default=1)
-    recurrence_day = models.IntegerField(choices=DAYS_OF_WEEK)
+    recurrence_day = models.IntegerField(choices=DAYS_OF_WEEK, default=0)
     is_active = models.BooleanField(default=True)
 
     def __str__(self):
