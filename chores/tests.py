@@ -1,6 +1,11 @@
-from django.core.exceptions import ValidationError
-from django.test import TestCase
+import datetime
 
+from django.core.exceptions import ValidationError
+from django.db import models
+from django.test import TestCase
+from django.utils import timezone
+
+from chores.models import ChoreAssignment
 from chores.models import Roommate
 from chores.models import Chore
 
@@ -148,3 +153,157 @@ class ChoreModelTests(TestCase):
         chore = Chore.objects.create(title="Trash", recurrence_day=0)
 
         self.assertEqual(str(chore), "Trash")
+
+
+class ChoreAssignmentModelTests(TestCase):
+    def setUp(self):
+        self.chore = Chore.objects.create(title="Trash", recurrence_day=0)
+        self.roommate = Roommate.objects.create(name="Alex")
+        self.due_date = datetime.date(2026, 9, 14)
+
+    def create_assignment(self, **overrides):
+        values = {
+            "chore": self.chore,
+            "assigned_to": self.roommate,
+            "due_date": self.due_date,
+        }
+        values.update(overrides)
+        return ChoreAssignment.objects.create(**values)
+
+    def test_field_definitions(self):
+        chore = ChoreAssignment._meta.get_field("chore")
+        assigned_to = ChoreAssignment._meta.get_field("assigned_to")
+        due_date = ChoreAssignment._meta.get_field("due_date")
+        status = ChoreAssignment._meta.get_field("status")
+        completed_at = ChoreAssignment._meta.get_field("completed_at")
+
+        self.assertIs(chore.remote_field.model, Chore)
+        self.assertIs(assigned_to.remote_field.model, Roommate)
+        self.assertIsInstance(due_date, models.DateField)
+        self.assertEqual(status.choices, ChoreAssignment.STATUS_CHOICES)
+        self.assertEqual(status.default, ChoreAssignment.PENDING)
+        self.assertIsInstance(completed_at, models.DateTimeField)
+
+    def test_foreign_keys_use_cascade(self):
+        self.assertIs(
+            ChoreAssignment._meta.get_field("chore").remote_field.on_delete,
+            models.CASCADE,
+        )
+        self.assertIs(
+            ChoreAssignment._meta.get_field(
+                "assigned_to"
+            ).remote_field.on_delete,
+            models.CASCADE,
+        )
+
+    def test_status_choices_are_exactly_the_three_statuses(self):
+        self.assertEqual(
+            [value for value, _ in ChoreAssignment.STATUS_CHOICES],
+            ["PENDING", "COMPLETED", "PENALIZED"],
+        )
+
+    def test_status_accepts_each_choice(self):
+        for value in ("PENDING", "COMPLETED", "PENALIZED"):
+            with self.subTest(status=value):
+                assignment = ChoreAssignment(
+                    chore=self.chore,
+                    assigned_to=self.roommate,
+                    due_date=self.due_date,
+                    status=value,
+                )
+
+                assignment.full_clean()
+
+    def test_invalid_status_fails_full_clean_on_status(self):
+        assignment = ChoreAssignment(
+            chore=self.chore,
+            assigned_to=self.roommate,
+            due_date=self.due_date,
+            status="CANCELLED",
+        )
+
+        with self.assertRaises(ValidationError) as context:
+            assignment.full_clean()
+        self.assertIn("status", context.exception.message_dict)
+
+    def test_status_defaults_to_pending(self):
+        assignment = self.create_assignment()
+
+        assignment.refresh_from_db()
+        self.assertEqual(assignment.status, "PENDING")
+
+    def test_completed_at_defaults_to_none(self):
+        assignment = self.create_assignment()
+
+        assignment.refresh_from_db()
+        self.assertIsNone(assignment.completed_at)
+
+    def test_completed_at_round_trips_an_aware_datetime(self):
+        completed_at = timezone.make_aware(
+            datetime.datetime(2026, 9, 14, 18, 30, 15)
+        )
+
+        assignment = self.create_assignment(completed_at=completed_at)
+        assignment.refresh_from_db()
+
+        self.assertEqual(assignment.completed_at, completed_at)
+
+    def test_completed_at_is_nullable_and_blank(self):
+        completed_at = ChoreAssignment._meta.get_field("completed_at")
+
+        self.assertTrue(completed_at.null)
+        self.assertTrue(completed_at.blank)
+
+    def test_due_date_is_required(self):
+        due_date = ChoreAssignment._meta.get_field("due_date")
+
+        self.assertFalse(due_date.null)
+        self.assertFalse(due_date.blank)
+
+    def test_relationships_and_reverse_relations(self):
+        assignment = self.create_assignment()
+
+        self.assertEqual(assignment.chore, self.chore)
+        self.assertEqual(assignment.assigned_to, self.roommate)
+        self.assertIn(assignment, self.chore.choreassignment_set.all())
+        self.assertIn(assignment, self.roommate.choreassignment_set.all())
+
+    def test_deleting_chore_cascades_to_assignments(self):
+        self.create_assignment()
+
+        self.chore.delete()
+
+        self.assertEqual(ChoreAssignment.objects.count(), 0)
+
+    def test_deleting_roommate_cascades_to_assignments(self):
+        self.create_assignment()
+
+        self.roommate.delete()
+
+        self.assertEqual(ChoreAssignment.objects.count(), 0)
+
+    def test_roommate_can_hold_several_assignments(self):
+        other_chore = Chore.objects.create(title="Dishes", recurrence_day=1)
+
+        self.create_assignment()
+        self.create_assignment(chore=other_chore)
+
+        self.assertEqual(
+            self.roommate.choreassignment_set.count(), 2
+        )
+
+    def test_same_chore_with_different_due_dates_persists(self):
+        self.create_assignment()
+        self.create_assignment(due_date=datetime.date(2026, 9, 21))
+
+        self.assertEqual(
+            ChoreAssignment.objects.filter(chore=self.chore).count(), 2
+        )
+
+    def test_status_has_no_uniqueness_constraint(self):
+        self.create_assignment()
+        self.create_assignment(due_date=datetime.date(2026, 9, 21))
+
+        self.assertEqual(
+            ChoreAssignment.objects.filter(status="PENDING").count(), 2
+        )

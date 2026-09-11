@@ -29,3 +29,26 @@ class Chore(models.Model):
 
     def __str__(self):
         return self.title
+
+
+class ChoreAssignment(models.Model):
+    PENDING = "PENDING"
+    COMPLETED = "COMPLETED"
+    PENALIZED = "PENALIZED"
+
+    STATUS_CHOICES = [
+        (PENDING, "Pending"),
+        (COMPLETED, "Completed"),
+        (PENALIZED, "Penalized"),
+    ]
+
+    chore = models.ForeignKey(Chore, on_delete=models.CASCADE)
+    assigned_to = models.ForeignKey(Roommate, on_delete=models.CASCADE)
+    due_date = models.DateField()
+    status = models.CharField(
+        max_length=10, choices=STATUS_CHOICES, default=PENDING
+    )
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"{self.chore} for {self.assigned_to} due {self.due_date}"
