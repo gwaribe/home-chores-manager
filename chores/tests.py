@@ -4,7 +4,11 @@ from unittest import mock
 from django.contrib import admin
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
+from django.core.management import call_command
 from django.db import models
+from django.template import Context
+from django.template import Template
+from django.template import loader
 from django.test import TestCase
 from django.utils import timezone
 
@@ -651,3 +655,180 @@ class CompleteAssignmentTests(TestCase):
         self.assertIsNone(self.assignment.completed_at)
         self.roommate.refresh_from_db()
         self.assertEqual(self.roommate.total_points, 0)
+
+
+class RunPenaltyCheckCommandTests(TestCase):
+    def setUp(self):
+        self.today = timezone.localdate()
+        self.roommate = Roommate.objects.create(name="Alex", total_points=10)
+        self.chore = Chore.objects.create(title="Trash", weight=3)
+
+    def create_assignment(self, due_date, status=ChoreAssignment.PENDING):
+        return ChoreAssignment.objects.create(
+            chore=self.chore,
+            assigned_to=self.roommate,
+            due_date=due_date,
+            status=status,
+        )
+
+    def test_command_is_discoverable(self):
+        from django.core.management import get_commands
+
+        self.assertEqual(
+            get_commands().get("run_penalty_check"),
+            "chores",
+        )
+
+    def test_overdue_pending_assignment_is_penalized_and_deducted(self):
+        assignment = self.create_assignment(
+            self.today - datetime.timedelta(days=1)
+        )
+
+        call_command("run_penalty_check")
+
+        assignment.refresh_from_db()
+        self.roommate.refresh_from_db()
+        self.assertEqual(assignment.status, ChoreAssignment.PENALIZED)
+        self.assertIsNone(assignment.completed_at)
+        self.assertEqual(self.roommate.total_points, 7)
+
+    def test_assignment_due_today_is_untouched(self):
+        assignment = self.create_assignment(self.today)
+
+        call_command("run_penalty_check")
+
+        assignment.refresh_from_db()
+        self.roommate.refresh_from_db()
+        self.assertEqual(assignment.status, ChoreAssignment.PENDING)
+        self.assertEqual(self.roommate.total_points, 10)
+
+    def test_future_assignment_is_untouched(self):
+        assignment = self.create_assignment(
+            self.today + datetime.timedelta(days=1)
+        )
+
+        call_command("run_penalty_check")
+
+        assignment.refresh_from_db()
+        self.roommate.refresh_from_db()
+        self.assertEqual(assignment.status, ChoreAssignment.PENDING)
+        self.assertEqual(self.roommate.total_points, 10)
+
+    def test_completed_assignment_is_untouched(self):
+        assignment = self.create_assignment(
+            self.today - datetime.timedelta(days=1),
+            status=ChoreAssignment.COMPLETED,
+        )
+
+        call_command("run_penalty_check")
+
+        assignment.refresh_from_db()
+        self.roommate.refresh_from_db()
+        self.assertEqual(assignment.status, ChoreAssignment.COMPLETED)
+        self.assertEqual(self.roommate.total_points, 10)
+
+    def test_already_penalized_assignment_is_untouched(self):
+        assignment = self.create_assignment(
+            self.today - datetime.timedelta(days=1),
+            status=ChoreAssignment.PENALIZED,
+        )
+
+        call_command("run_penalty_check")
+
+        assignment.refresh_from_db()
+        self.roommate.refresh_from_db()
+        self.assertEqual(assignment.status, ChoreAssignment.PENALIZED)
+        self.assertEqual(self.roommate.total_points, 10)
+
+    def test_second_run_changes_nothing(self):
+        assignment = self.create_assignment(
+            self.today - datetime.timedelta(days=1)
+        )
+
+        call_command("run_penalty_check")
+        call_command("run_penalty_check")
+
+        assignment.refresh_from_db()
+        self.roommate.refresh_from_db()
+        self.assertEqual(assignment.status, ChoreAssignment.PENALIZED)
+        self.assertEqual(self.roommate.total_points, 7)
+
+    def test_no_overdue_assignments_is_a_noop(self):
+        assignment = self.create_assignment(self.today)
+
+        call_command("run_penalty_check")
+
+        assignment.refresh_from_db()
+        self.roommate.refresh_from_db()
+        self.assertEqual(assignment.status, ChoreAssignment.PENDING)
+        self.assertEqual(self.roommate.total_points, 10)
+
+    def test_penalties_use_each_assignments_own_weight(self):
+        heavy_chore = Chore.objects.create(title="Deep clean", weight=5)
+        other_roommate = Roommate.objects.create(name="Blair", total_points=10)
+        ChoreAssignment.objects.create(
+            chore=heavy_chore,
+            assigned_to=other_roommate,
+            due_date=self.today - datetime.timedelta(days=2),
+        )
+
+        call_command("run_penalty_check")
+
+        other_roommate.refresh_from_db()
+        self.assertEqual(other_roommate.total_points, 5)
+
+    def test_status_change_rolls_back_when_deduction_fails(self):
+        assignment = self.create_assignment(
+            self.today - datetime.timedelta(days=1)
+        )
+
+        with mock.patch(
+            "chores.management.commands.run_penalty_check.F",
+            side_effect=RuntimeError,
+        ):
+            with self.assertRaises(RuntimeError):
+                call_command("run_penalty_check")
+
+        assignment.refresh_from_db()
+        self.roommate.refresh_from_db()
+        self.assertEqual(assignment.status, ChoreAssignment.PENDING)
+        self.assertEqual(self.roommate.total_points, 10)
+
+
+class BaseTemplateTests(TestCase):
+    def render_child(self):
+        template = Template(
+            "{% extends \"chores/base.html\" %}"
+            "{% block content %}<p>Child body</p>{% endblock %}"
+        )
+        return template.render(Context({}))
+
+    def test_base_template_is_discoverable_by_the_loader(self):
+        template = loader.get_template("chores/base.html")
+
+        self.assertIsNotNone(template)
+
+    def test_child_template_extends_and_renders_its_content(self):
+        html = self.render_child()
+
+        self.assertIn("Child body", html)
+
+    def test_rendered_html_includes_the_pico_cdn_link(self):
+        html = self.render_child()
+
+        self.assertIn(
+            'href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css"',
+            html,
+        )
+
+    def test_rendered_html_includes_nav_with_admin_link(self):
+        html = self.render_child()
+
+        self.assertIn("<nav>", html)
+        self.assertIn('href="/admin/"', html)
+
+    def test_rendered_html_wraps_content_in_the_container(self):
+        html = self.render_child()
+
+        self.assertIn('<main class="container">', html)
+        self.assertIn("Child body", html.split('<main class="container">')[1])
