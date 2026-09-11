@@ -27,4 +27,5 @@ urlpatterns = [
         views.complete_chore,
         name='complete_assignment',
     ),
+    path('generate-cycle/', views.generate_cycle, name='generate_cycle'),
 ]

@@ -33,6 +33,7 @@
     <header>
       <h2>This Week's Chores</h2>
       <p>{{ week_start }} to {{ week_end }}</p>
+      <a href="/generate-cycle/" role="button">Generate This Week's Chores</a>
     </header>
     {% if assignment_days %}
       {% for day in assignment_days %}

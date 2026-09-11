@@ -11,6 +11,7 @@ from django.template import Template
 from django.template import loader
 from django.test import Client
 from django.test import TestCase
+from django.urls import reverse
 from django.utils import timezone
 
 from chores.models import ChoreAssignment
@@ -1035,3 +1036,64 @@ class CompleteChoreEndpointTests(TestCase):
         self.assignment.refresh_from_db()
         self.assertEqual(response.status_code, 302)
         self.assertEqual(self.assignment.status, ChoreAssignment.COMPLETED)
+
+
+class GenerateCycleEndpointTests(TestCase):
+    def current_week_start(self):
+        today = timezone.localdate()
+        return today - datetime.timedelta(days=today.weekday())
+
+    def test_get_creates_this_weeks_assignments_and_redirects(self):
+        roommate = Roommate.objects.create(name="Alex")
+        chore = Chore.objects.create(
+            title="Trash", weight=2, recurrence_day=2, is_active=True
+        )
+
+        response = self.client.get("/generate-cycle/")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], "/")
+        assignment = ChoreAssignment.objects.get()
+        self.assertEqual(assignment.chore, chore)
+        self.assertEqual(assignment.assigned_to, roommate)
+        self.assertEqual(
+            assignment.due_date,
+            self.current_week_start() + datetime.timedelta(days=2),
+        )
+
+    def test_url_route_is_named(self):
+        self.assertEqual(reverse("generate_cycle"), "/generate-cycle/")
+
+    def test_second_call_leaves_assignment_count_unchanged(self):
+        Roommate.objects.create(name="Alex")
+        Chore.objects.create(title="Trash", weight=2)
+        Chore.objects.create(title="Dishes", weight=1, recurrence_day=3)
+
+        self.client.get("/generate-cycle/")
+        first_count = ChoreAssignment.objects.count()
+        self.client.get("/generate-cycle/")
+
+        self.assertEqual(first_count, 2)
+        self.assertEqual(ChoreAssignment.objects.count(), 2)
+
+    def test_redirects_when_there_are_no_roommates(self):
+        Chore.objects.create(title="Trash", weight=2, is_active=True)
+
+        response = self.client.get("/generate-cycle/")
+
+        self.assertRedirects(response, "/")
+        self.assertEqual(ChoreAssignment.objects.count(), 0)
+
+    def test_redirects_when_there_are_no_active_chores(self):
+        Roommate.objects.create(name="Alex")
+        Chore.objects.create(title="Trash", weight=2, is_active=False)
+
+        response = self.client.get("/generate-cycle/")
+
+        self.assertRedirects(response, "/")
+        self.assertEqual(ChoreAssignment.objects.count(), 0)
+
+    def test_dashboard_renders_the_generate_cycle_trigger(self):
+        response = self.client.get("/")
+
+        self.assertContains(response, 'href="/generate-cycle/"')

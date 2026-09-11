@@ -4,11 +4,13 @@ from django.shortcuts import get_object_or_404
 from django.shortcuts import redirect
 from django.shortcuts import render
 from django.utils import timezone
+from django.views.decorators.http import require_GET
 from django.views.decorators.http import require_POST
 
 from chores.models import ChoreAssignment
 from chores.models import Roommate
 from chores.services import complete_assignment
+from chores.services import generate_weekly_assignments
 
 
 def dashboard(request):
@@ -51,4 +53,19 @@ def complete_chore(request, id):
     """Complete a chore assignment and redirect back to the dashboard."""
     assignment = get_object_or_404(ChoreAssignment, pk=id)
     complete_assignment(assignment)
+    return redirect("/")
+
+
+@require_GET
+def generate_cycle(request):
+    """Regenerate the current week's assignments and return to the dashboard.
+
+    The current week's Monday is derived from ``timezone.localdate()`` and
+    handed to :func:`chores.services.generate_weekly_assignments`, which skips
+    any ``(chore, due_date)`` pair that already exists so repeated calls do not
+    create duplicates.
+    """
+    today = timezone.localdate()
+    week_start = today - timedelta(days=today.weekday())
+    generate_weekly_assignments(week_start)
     return redirect("/")
