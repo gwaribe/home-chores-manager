@@ -28,4 +28,4 @@ Definition of done:
 - Nothing in the code was changed
 
 Ignore what the implementation says it does. Only the acceptance
-criteria and the running code count.
+criteria and the running code count. Your work is to only test.
