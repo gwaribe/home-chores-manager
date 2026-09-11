@@ -1,0 +1,74 @@
+{% extends "chores/base.html" %}
+
+{% block title %}Dashboard - Home Chores Manager{% endblock %}
+
+{% block content %}
+  <h1>Dashboard</h1>
+
+  <article>
+    <header><h2>Leaderboard</h2></header>
+    {% if roommates %}
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Roommate</th>
+            <th scope="col">Points</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for roommate in roommates %}
+            <tr>
+              <td>{{ roommate.name }}</td>
+              <td>{{ roommate.total_points }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p>No roommates yet. Add some in the <a href="/admin/">admin</a>.</p>
+    {% endif %}
+  </article>
+
+  <article>
+    <header>
+      <h2>This Week's Chores</h2>
+      <p>{{ week_start }} to {{ week_end }}</p>
+    </header>
+    {% if assignment_days %}
+      {% for day in assignment_days %}
+        <h3>{{ day.date|date:"l, F j" }}</h3>
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Chore</th>
+              <th scope="col">Weight</th>
+              <th scope="col">Assigned to</th>
+              <th scope="col">Status</th>
+              <th scope="col">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for assignment in day.assignments %}
+              <tr>
+                <td>{{ assignment.chore.title }}</td>
+                <td><mark>{{ assignment.chore.weight }}</mark></td>
+                <td>{{ assignment.assigned_to.name }}</td>
+                <td data-status="{{ assignment.status }}">{{ assignment.get_status_display }}</td>
+                <td>
+                  {% if assignment.status == "PENDING" %}
+                    <form method="post" action="/assignments/{{ assignment.id }}/complete/">
+                      {% csrf_token %}
+                      <button class="outline" type="submit">Complete</button>
+                    </form>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endfor %}
+    {% else %}
+      <p>No chores assigned for this week.</p>
+    {% endif %}
+  </article>
+{% endblock %}

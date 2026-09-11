@@ -9,6 +9,7 @@ from django.db import models
 from django.template import Context
 from django.template import Template
 from django.template import loader
+from django.test import Client
 from django.test import TestCase
 from django.utils import timezone
 
@@ -17,17 +18,6 @@ from chores.models import Roommate
 from chores.models import Chore
 from chores.services import complete_assignment
 from chores.services import generate_weekly_assignments
-
-
-class RootUrlPlaceholderTests(TestCase):
-    """Placeholder for the scaffold; replaced by the dashboard test in #10."""
-
-    def test_root_url_returns_404(self):
-        response = self.client.get("/")
-
-        self.assertEqual(response.status_code, 404)
-
-
 class RoommateModelTests(TestCase):
     def test_name_field_definition(self):
         field = Roommate._meta.get_field("name")
@@ -832,3 +822,216 @@ class BaseTemplateTests(TestCase):
 
         self.assertIn('<main class="container">', html)
         self.assertIn("Child body", html.split('<main class="container">')[1])
+
+
+def monday_of(day):
+    return day - datetime.timedelta(days=day.weekday())
+
+
+class DashboardViewTests(TestCase):
+    def setUp(self):
+        self.today = timezone.localdate()
+        self.week_start = monday_of(self.today)
+
+    def create_assignment(
+        self, title="Trash", weight=3, due_date=None, roommate_name="Alex"
+    ):
+        roommate = Roommate.objects.create(name=roommate_name)
+        chore = Chore.objects.create(title=title, weight=weight, recurrence_day=0)
+        if due_date is None:
+            due_date = self.today
+        return ChoreAssignment.objects.create(
+            chore=chore,
+            assigned_to=roommate,
+            due_date=due_date,
+        )
+
+    def test_root_returns_200(self):
+        response = self.client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_empty_database_returns_200_and_empty_state(self):
+        response = self.client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "No roommates yet")
+        self.assertContains(response, "No chores assigned for this week")
+
+    def test_no_assignments_but_roommates_returns_empty_state(self):
+        Roommate.objects.create(name="Alex", total_points=5)
+
+        response = self.client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Alex")
+        self.assertContains(response, "No chores assigned for this week")
+
+    def test_leaderboard_orders_by_points_desc_then_id(self):
+        low_first = Roommate.objects.create(name="Alex", total_points=5)
+        high = Roommate.objects.create(name="Blair", total_points=10)
+        low_second = Roommate.objects.create(name="Casey", total_points=5)
+
+        response = self.client.get("/")
+
+        self.assertEqual(
+            list(response.context["roommates"]),
+            [high, low_first, low_second],
+        )
+
+    def test_leaderboard_renders_names_and_points(self):
+        Roommate.objects.create(name="Blair", total_points=12)
+
+        response = self.client.get("/")
+
+        self.assertContains(response, "Blair")
+        self.assertContains(response, "12")
+
+    def test_assignment_renders_key_fields(self):
+        self.create_assignment(title="Bathroom Deep Clean", weight=4)
+
+        response = self.client.get("/")
+
+        self.assertContains(response, "Bathroom Deep Clean")
+        self.assertContains(response, "<mark>4</mark>", html=True)
+        self.assertContains(response, "Alex")
+        self.assertContains(response, 'data-status="PENDING"')
+        self.assertContains(response, "Pending")
+
+    def test_pending_assignment_renders_complete_form(self):
+        assignment = self.create_assignment()
+
+        response = self.client.get("/")
+
+        self.assertContains(response, 'method="post"')
+        self.assertContains(
+            response, f'action="/assignments/{assignment.id}/complete/"'
+        )
+        self.assertContains(response, "csrfmiddlewaretoken")
+
+    def test_completed_assignment_has_no_complete_form(self):
+        assignment = self.create_assignment()
+        assignment.status = ChoreAssignment.COMPLETED
+        assignment.save()
+
+        response = self.client.get("/")
+
+        self.assertContains(response, 'data-status="COMPLETED"')
+        self.assertNotContains(
+            response,
+            f'<form method="post" action="/assignments/{assignment.id}/complete/">',
+        )
+
+    def test_assignments_from_other_weeks_are_not_shown(self):
+        self.create_assignment(
+            title="Last Week Chore", due_date=self.week_start - datetime.timedelta(days=1)
+        )
+        self.create_assignment(
+            title="Next Week Chore", due_date=self.week_start + datetime.timedelta(days=7)
+        )
+
+        response = self.client.get("/")
+
+        self.assertNotContains(response, "Last Week Chore")
+        self.assertNotContains(response, "Next Week Chore")
+
+    def test_assignments_are_grouped_by_day(self):
+        monday = self.create_assignment(
+            title="Monday Chore", due_date=self.week_start
+        )
+        sunday = self.create_assignment(
+            title="Sunday Chore", due_date=self.week_start + datetime.timedelta(days=6)
+        )
+
+        response = self.client.get("/")
+
+        days = response.context["assignment_days"]
+        self.assertEqual([entry["date"] for entry in days], [self.week_start, self.week_start + datetime.timedelta(days=6)])
+        self.assertEqual(days[0]["assignments"], [monday])
+        self.assertEqual(days[1]["assignments"], [sunday])
+
+
+class CompleteChoreEndpointTests(TestCase):
+    def setUp(self):
+        self.roommate = Roommate.objects.create(name="Alex", total_points=1)
+        self.chore = Chore.objects.create(title="Trash", weight=4)
+        self.assignment = ChoreAssignment.objects.create(
+            chore=self.chore,
+            assigned_to=self.roommate,
+            due_date=timezone.localdate(),
+        )
+
+    def complete_url(self, assignment=None):
+        assignment = assignment or self.assignment
+        return f"/assignments/{assignment.id}/complete/"
+
+    def test_post_completes_pending_assignment_and_credits_once(self):
+        response = self.client.post(self.complete_url())
+
+        self.assignment.refresh_from_db()
+        self.roommate.refresh_from_db()
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self.assignment.status, ChoreAssignment.COMPLETED)
+        self.assertIsNotNone(self.assignment.completed_at)
+        self.assertEqual(self.roommate.total_points, 5)
+
+    def test_post_redirects_to_root(self):
+        response = self.client.post(self.complete_url())
+
+        self.assertRedirects(response, "/")
+
+    def test_get_returns_405_and_changes_nothing(self):
+        response = self.client.get(self.complete_url())
+
+        self.assignment.refresh_from_db()
+        self.roommate.refresh_from_db()
+        self.assertEqual(response.status_code, 405)
+        self.assertEqual(self.assignment.status, ChoreAssignment.PENDING)
+        self.assertEqual(self.roommate.total_points, 1)
+
+    def test_repeated_post_does_not_double_complete(self):
+        self.client.post(self.complete_url())
+        response = self.client.post(self.complete_url())
+
+        self.assignment.refresh_from_db()
+        self.roommate.refresh_from_db()
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self.assignment.status, ChoreAssignment.COMPLETED)
+        self.assertEqual(self.roommate.total_points, 5)
+
+    def test_unknown_id_returns_404(self):
+        response = self.client.post("/assignments/999999/complete/")
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_non_integer_id_does_not_match_the_route(self):
+        response = self.client.post("/assignments/abc/complete/")
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_post_without_csrf_token_is_forbidden(self):
+        client = Client(enforce_csrf_checks=True)
+
+        response = client.post(self.complete_url())
+
+        self.assignment.refresh_from_db()
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(self.assignment.status, ChoreAssignment.PENDING)
+
+    def test_post_with_csrf_token_succeeds_when_checks_enforced(self):
+        client = Client(enforce_csrf_checks=True)
+        client.get("/")
+        token = client.cookies["csrftoken"].value
+
+        response = client.post(self.complete_url(), HTTP_X_CSRFTOKEN=token)
+
+        self.assignment.refresh_from_db()
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self.assignment.status, ChoreAssignment.COMPLETED)
+
+    def test_normal_test_client_post_succeeds(self):
+        response = self.client.post(self.complete_url())
+
+        self.assignment.refresh_from_db()
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self.assignment.status, ChoreAssignment.COMPLETED)

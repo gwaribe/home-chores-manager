@@ -17,6 +17,14 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path
 
+from chores import views
+
 urlpatterns = [
     path('admin/', admin.site.urls),
+    path('', views.dashboard, name='dashboard'),
+    path(
+        'assignments/<int:id>/complete/',
+        views.complete_chore,
+        name='complete_assignment',
+    ),
 ]
