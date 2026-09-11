@@ -1,4 +1,5 @@
 import datetime
+from unittest import mock
 
 from django.contrib import admin
 from django.contrib.auth.models import User
@@ -10,6 +11,8 @@ from django.utils import timezone
 from chores.models import ChoreAssignment
 from chores.models import Roommate
 from chores.models import Chore
+from chores.services import complete_assignment
+from chores.services import generate_weekly_assignments
 
 
 class RootUrlPlaceholderTests(TestCase):
@@ -415,3 +418,236 @@ class AdminRegistrationTests(TestCase):
                 chore=chore, assigned_to=roommate
             ).exists()
         )
+
+
+class GenerateWeeklyAssignmentsTests(TestCase):
+    def setUp(self):
+        # 2026-09-14 is a Monday.
+        self.week_start = datetime.date(2026, 9, 14)
+
+    def test_target_week_start_is_a_monday(self):
+        self.assertEqual(self.week_start.weekday(), 0)
+
+    def test_active_chore_is_assigned_on_its_recurrence_day(self):
+        roommate = Roommate.objects.create(name="Alex")
+        chore = Chore.objects.create(
+            title="Trash", weight=2, recurrence_day=0, is_active=True
+        )
+
+        generate_weekly_assignments(self.week_start)
+
+        assignment = ChoreAssignment.objects.get()
+        self.assertEqual(assignment.chore, chore)
+        self.assertEqual(assignment.assigned_to, roommate)
+        self.assertEqual(assignment.due_date, self.week_start)
+
+    def test_due_dates_cover_monday_through_sunday(self):
+        Roommate.objects.create(name="Alex")
+        chores = [
+            Chore.objects.create(
+                title=f"Chore {day}", weight=1, recurrence_day=day
+            )
+            for day in range(7)
+        ]
+
+        generate_weekly_assignments(self.week_start)
+
+        for chore in chores:
+            with self.subTest(recurrence_day=chore.recurrence_day):
+                assignment = ChoreAssignment.objects.get(chore=chore)
+                self.assertEqual(
+                    assignment.due_date,
+                    self.week_start
+                    + datetime.timedelta(days=chore.recurrence_day),
+                )
+        self.assertEqual(ChoreAssignment.objects.count(), 7)
+
+    def test_heaviest_chores_are_processed_first(self):
+        low = Roommate.objects.create(name="Alex")
+        high = Roommate.objects.create(name="Blair")
+        heavy = Chore.objects.create(title="Deep clean", weight=4, recurrence_day=6)
+        light = Chore.objects.create(title="Trash", weight=1, recurrence_day=0)
+
+        generate_weekly_assignments(self.week_start)
+
+        self.assertEqual(
+            ChoreAssignment.objects.get(chore=heavy).assigned_to, low
+        )
+        self.assertEqual(
+            ChoreAssignment.objects.get(chore=light).assigned_to, high
+        )
+
+    def test_assignment_goes_to_lowest_score_roommate(self):
+        Roommate.objects.create(name="Alex", total_points=5)
+        low = Roommate.objects.create(name="Blair", total_points=1)
+        chore = Chore.objects.create(title="Trash", weight=2)
+
+        generate_weekly_assignments(self.week_start)
+
+        self.assertEqual(
+            ChoreAssignment.objects.get(chore=chore).assigned_to, low
+        )
+
+    def test_roommate_score_tie_is_broken_by_primary_key(self):
+        first = Roommate.objects.create(name="Alex")
+        Roommate.objects.create(name="Blair")
+        chore = Chore.objects.create(title="Trash", weight=1)
+
+        generate_weekly_assignments(self.week_start)
+
+        self.assertEqual(
+            ChoreAssignment.objects.get(chore=chore).assigned_to, first
+        )
+
+    def test_equal_weight_chores_are_processed_by_id(self):
+        first_roommate = Roommate.objects.create(name="Alex")
+        second_roommate = Roommate.objects.create(name="Blair")
+        first_chore = Chore.objects.create(title="Trash", weight=2)
+        second_chore = Chore.objects.create(title="Dishes", weight=2)
+
+        generate_weekly_assignments(self.week_start)
+
+        self.assertEqual(
+            ChoreAssignment.objects.get(chore=first_chore).assigned_to,
+            first_roommate,
+        )
+        self.assertEqual(
+            ChoreAssignment.objects.get(chore=second_chore).assigned_to,
+            second_roommate,
+        )
+
+    def test_existing_pairs_are_skipped(self):
+        Roommate.objects.create(name="Alex")
+        chore = Chore.objects.create(title="Trash", weight=2)
+
+        generate_weekly_assignments(self.week_start)
+        generate_weekly_assignments(self.week_start)
+
+        self.assertEqual(
+            ChoreAssignment.objects.filter(chore=chore).count(), 1
+        )
+
+    def test_inactive_chores_get_no_assignment(self):
+        Roommate.objects.create(name="Alex")
+        Chore.objects.create(title="Trash", is_active=False)
+
+        generate_weekly_assignments(self.week_start)
+
+        self.assertEqual(ChoreAssignment.objects.count(), 0)
+
+    def test_zero_roommates_creates_nothing_and_does_not_raise(self):
+        Chore.objects.create(title="Trash", weight=2)
+
+        generate_weekly_assignments(self.week_start)
+
+        self.assertEqual(ChoreAssignment.objects.count(), 0)
+
+    def test_generator_does_not_persist_point_balances(self):
+        roommate = Roommate.objects.create(name="Alex", total_points=0)
+        Chore.objects.create(title="Trash", weight=3)
+
+        generate_weekly_assignments(self.week_start)
+
+        roommate.refresh_from_db()
+        self.assertEqual(roommate.total_points, 0)
+        self.assertEqual(ChoreAssignment.objects.count(), 1)
+
+    def test_created_assignments_are_pending_and_uncompleted(self):
+        Roommate.objects.create(name="Alex")
+        Chore.objects.create(title="Trash", weight=3)
+
+        generate_weekly_assignments(self.week_start)
+
+        assignment = ChoreAssignment.objects.get()
+        self.assertEqual(assignment.status, ChoreAssignment.PENDING)
+        self.assertIsNone(assignment.completed_at)
+
+
+class CompleteAssignmentTests(TestCase):
+    def setUp(self):
+        self.roommate = Roommate.objects.create(name="Alex", total_points=0)
+        self.chore = Chore.objects.create(title="Trash", weight=3)
+        self.assignment = ChoreAssignment.objects.create(
+            chore=self.chore,
+            assigned_to=self.roommate,
+            due_date=datetime.date(2026, 9, 14),
+        )
+
+    def test_pending_assignment_transitions_to_completed(self):
+        result = complete_assignment(self.assignment)
+
+        self.assertTrue(result)
+        self.assignment.refresh_from_db()
+        self.assertEqual(self.assignment.status, ChoreAssignment.COMPLETED)
+
+    def test_completed_at_is_stamped_with_an_aware_datetime(self):
+        before = timezone.now()
+
+        complete_assignment(self.assignment)
+
+        self.assignment.refresh_from_db()
+        self.assertIsNotNone(self.assignment.completed_at)
+        self.assertTrue(timezone.is_aware(self.assignment.completed_at))
+        self.assertGreaterEqual(self.assignment.completed_at, before)
+        self.assertLessEqual(self.assignment.completed_at, timezone.now())
+
+    def test_weight_is_credited_to_the_roommate(self):
+        complete_assignment(self.assignment)
+
+        self.roommate.refresh_from_db()
+        self.assertEqual(self.roommate.total_points, 3)
+
+    def test_double_completion_credits_points_once(self):
+        first = complete_assignment(self.assignment)
+        second = complete_assignment(self.assignment)
+
+        self.assertTrue(first)
+        self.assertFalse(second)
+        self.roommate.refresh_from_db()
+        self.assertEqual(self.roommate.total_points, 3)
+        self.assertEqual(
+            ChoreAssignment.objects.filter(
+                status=ChoreAssignment.COMPLETED
+            ).count(),
+            1,
+        )
+
+    def test_penalized_assignment_is_refused_and_unchanged(self):
+        self.assignment.status = ChoreAssignment.PENALIZED
+        self.assignment.save()
+
+        result = complete_assignment(self.assignment)
+
+        self.assertFalse(result)
+        self.assignment.refresh_from_db()
+        self.assertEqual(self.assignment.status, ChoreAssignment.PENALIZED)
+        self.assertIsNone(self.assignment.completed_at)
+        self.roommate.refresh_from_db()
+        self.assertEqual(self.roommate.total_points, 0)
+
+    def test_completed_assignment_is_refused_and_unchanged(self):
+        completed_at = timezone.make_aware(
+            datetime.datetime(2026, 9, 14, 9, 0, 0)
+        )
+        self.assignment.status = ChoreAssignment.COMPLETED
+        self.assignment.completed_at = completed_at
+        self.assignment.save()
+
+        result = complete_assignment(self.assignment)
+
+        self.assertFalse(result)
+        self.assignment.refresh_from_db()
+        self.assertEqual(self.assignment.completed_at, completed_at)
+        self.roommate.refresh_from_db()
+        self.assertEqual(self.roommate.total_points, 0)
+
+    def test_status_change_rolls_back_when_point_credit_fails(self):
+        with mock.patch("chores.services.F", side_effect=RuntimeError):
+            with self.assertRaises(RuntimeError):
+                complete_assignment(self.assignment)
+
+        self.assignment.refresh_from_db()
+        self.assertEqual(self.assignment.status, ChoreAssignment.PENDING)
+        self.assertIsNone(self.assignment.completed_at)
+        self.roommate.refresh_from_db()
+        self.assertEqual(self.roommate.total_points, 0)
