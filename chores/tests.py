@@ -4,6 +4,15 @@ from django.test import TestCase
 from chores.models import Roommate
 
 
+class RootUrlPlaceholderTests(TestCase):
+    """Placeholder for the scaffold; replaced by the dashboard test in #10."""
+
+    def test_root_url_returns_404(self):
+        response = self.client.get("/")
+
+        self.assertEqual(response.status_code, 404)
+
+
 class RoommateModelTests(TestCase):
     def test_name_field_definition(self):
         field = Roommate._meta.get_field("name")
