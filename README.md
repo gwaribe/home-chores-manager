@@ -26,3 +26,7 @@ I hardly reviewed the code, each agent did its role well. The engineer seemed to
 ## What were the challenges?
 - I didn't want to keep approving what commands the agent can ran. I setup an AWS EC2 ubuntu server and setup the workspace and the agents there. I cared less on what commands were run.
 - Everytime a task is implemented, the QA has to test the work and this involved switching between agents manually. To solve this an agent orchestrator is needed to automatically manage the workflow. However if i did this, the work would be done in a single session, it would create a lot of context and increasing the token usage.
+
+---
+Lessons were learnt from\
+[DataTalksClub AI dev tools zoomcamp](https://github.com/DataTalksClub/ai-dev-tools-zoomcamp)
